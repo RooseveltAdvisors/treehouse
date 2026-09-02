@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.4.0](https://github.com/kunchenguid/treehouse/compare/v2.3.0...v2.4.0) (2026-09-02)
+
+
+### Features
+
+* add Nix package manager install support ([#113](https://github.com/kunchenguid/treehouse/issues/113)) ([4307a30](https://github.com/kunchenguid/treehouse/commit/4307a30f6d18457200dbd15954a56d75749454b8))
+* **pool:** support configurable base branch for get ([#119](https://github.com/kunchenguid/treehouse/issues/119)) ([c98e9de](https://github.com/kunchenguid/treehouse/commit/c98e9de0a8ad85d9551ccce85ecd96c8b9a8dff5))
+
+
+### Bug Fixes
+
+* **shell:** start supported user shells as interactive login sessions ([#120](https://github.com/kunchenguid/treehouse/issues/120)) ([db06078](https://github.com/kunchenguid/treehouse/commit/db06078c6f5569e539b8cdb7703f38fdefe06382))
+
 ## [2.3.0](https://github.com/kunchenguid/treehouse/compare/v2.2.1...v2.3.0) (2026-08-21)
 
 
