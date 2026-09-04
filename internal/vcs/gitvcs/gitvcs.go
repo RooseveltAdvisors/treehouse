@@ -482,27 +482,23 @@ func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error
 // detects a squash merge without treating unrelated target-branch changes as a
 // mismatch.
 func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", ref)
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
+	out, err := runGitCombined(worktreePath, "merge-base", "--is-ancestor", "HEAD", ref)
 	if err == nil {
 		return true, nil
 	}
 	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 		return isHeadContentMergedIntoRef(worktreePath, ref)
 	}
-	return false, fmt.Errorf("git merge-base --is-ancestor HEAD %s: %s", ref, strings.TrimSpace(string(out)))
+	return false, mergeBaseError(err, out, "git merge-base --is-ancestor HEAD "+ref)
 }
 
 func isHeadContentMergedIntoRef(worktreePath, ref string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "HEAD", ref)
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
+	out, err := runGitCombined(worktreePath, "merge-base", "HEAD", ref)
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return false, fmt.Errorf("git merge-base HEAD %s returned no common ancestor", ref)
 		}
-		return false, fmt.Errorf("git merge-base HEAD %s: %s", ref, strings.TrimSpace(string(out)))
+		return false, mergeBaseError(err, out, "git merge-base HEAD "+ref)
 	}
 	base := strings.TrimSpace(string(out))
 	if base == "" {
@@ -600,17 +596,16 @@ func runGit(dir string, args ...string) (string, error) {
 // remote.
 const waitDelay = 5 * time.Second
 
-// runGitRaw runs one git command bounded by the process deadline.
+// boundedGit builds a git command bound to ctx. It is the single place the
+// bound is applied, so no git invocation in this package can be added later
+// that quietly escapes the deadline.
 //
 // Every network-facing git operation treehouse runs - `fetch` above all - can
 // block indefinitely against an origin that accepts the connection and then
 // says nothing. Binding the command to the deadline context makes the wait
 // interruptible AND kills the git child when it expires; without the context,
 // killing treehouse leaves `git fetch` reparented to init and still running.
-func runGitRaw(dir string, args ...string) ([]byte, error) {
-	ctx, cancel := deadline.Context()
-	defer cancel()
-
+func boundedGit(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.WaitDelay = waitDelay
 	// Kill the whole subtree, not just git. Cancelling the context kills only
@@ -633,10 +628,42 @@ func runGitRaw(dir string, args ...string) ([]byte, error) {
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	return cmd
+}
+
+// waitDelayOutcome reinterprets exec.ErrWaitDelay against the process's own
+// exit status. WaitDelay fires when the command has already exited but a
+// descendant still holds the inherited pipes, so on its own it says nothing
+// about whether the command worked: ProcessState does. A successful command is
+// reported as success (ok), and an unsuccessful one gets an error naming the
+// command rather than the bare Go sentinel.
+func waitDelayOutcome(cmd *exec.Cmd, args []string) (ok bool, err error) {
+	if cmd.ProcessState == nil {
+		return false, fmt.Errorf("git %s: %w", strings.Join(args, " "), exec.ErrWaitDelay)
+	}
+	if cmd.ProcessState.Success() {
+		return true, nil
+	}
+	return false, fmt.Errorf("git %s: %s", strings.Join(args, " "), cmd.ProcessState)
+}
+
+// runGitRaw runs one git command bounded by the process deadline.
+func runGitRaw(dir string, args ...string) ([]byte, error) {
+	ctx, cancel := deadline.Context()
+	defer cancel()
+
+	cmd := boundedGit(ctx, dir, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		if ctxErr := ctx.Err(); errors.Is(ctxErr, context.DeadlineExceeded) {
 			return nil, fmt.Errorf("git %s: timed out; raise --timeout or check the remote", strings.Join(args, " "))
+		}
+		if errors.Is(err, exec.ErrWaitDelay) {
+			ok, waitErr := waitDelayOutcome(cmd, args)
+			if ok {
+				return out, nil
+			}
+			return nil, waitErr
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exitErr.Stderr)))
@@ -644,6 +671,51 @@ func runGitRaw(dir string, args ...string) ([]byte, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// runGitCombined runs one bounded git command and returns its combined output
+// with the error left intact, so a caller can read the exit code as data.
+// `git merge-base --is-ancestor` answers "not an ancestor" with exit 1, which
+// is a real answer rather than a failure.
+func runGitCombined(dir string, args ...string) ([]byte, error) {
+	ctx, cancel := deadline.Context()
+	defer cancel()
+
+	cmd := boundedGit(ctx, dir, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctxErr := ctx.Err(); errors.Is(ctxErr, context.DeadlineExceeded) {
+			return out, fmt.Errorf("git %s: timed out; raise --timeout or check the remote", strings.Join(args, " "))
+		}
+		if errors.Is(err, exec.ErrWaitDelay) {
+			ok, waitErr := waitDelayOutcome(cmd, args)
+			if ok {
+				return out, nil
+			}
+			// Hand back an ExitError so the caller still reads the exit code
+			// the command actually reported.
+			if cmd.ProcessState != nil {
+				return out, &exec.ExitError{ProcessState: cmd.ProcessState}
+			}
+			return out, waitErr
+		}
+		if _, ok := err.(*exec.ExitError); !ok {
+			return out, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		}
+	}
+	return out, err
+}
+
+// mergeBaseError renders a merge-base failure. When git ran and failed, its own
+// diagnostics are in its output, which is what this reported before it was
+// bounded. When it never produced a verdict at all - the deadline expired, or
+// it could not start - the output is empty and the error carries the reason.
+func mergeBaseError(err error, out []byte, invocation string) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return fmt.Errorf("%s: %s", invocation, strings.TrimSpace(string(out)))
+	}
+	return err
 }
 
 // Backend adapts this package's functions to the vcs.Backend interface. All

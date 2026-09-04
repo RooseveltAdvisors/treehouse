@@ -596,6 +596,20 @@ func runJJ(dir string, args ...string) (string, error) {
 		if ctxErr := ctx.Err(); errors.Is(ctxErr, context.DeadlineExceeded) {
 			return "", fmt.Errorf("jj %s: timed out; raise --timeout or check the remote", strings.Join(args, " "))
 		}
+		// WaitDelay fires when jj has already exited but a descendant still
+		// holds the inherited pipes, so on its own it says nothing about
+		// whether the command worked: ProcessState does. A command that
+		// succeeded must not be reported as a failure, and one that did not
+		// gets an error naming it rather than the bare Go sentinel.
+		if errors.Is(err, exec.ErrWaitDelay) {
+			if cmd.ProcessState == nil {
+				return "", fmt.Errorf("jj %s: %w", strings.Join(args, " "), err)
+			}
+			if cmd.ProcessState.Success() {
+				return strings.TrimSpace(string(out)), nil
+			}
+			return "", fmt.Errorf("jj %s: %s", strings.Join(args, " "), cmd.ProcessState)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return "", fmt.Errorf("jj %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exitErr.Stderr)))
 		}
