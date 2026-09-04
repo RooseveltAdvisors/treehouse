@@ -594,7 +594,7 @@ func runGit(dir string, args ...string) (string, error) {
 // after the deadline fired. Without this the deadline is not authoritative -
 // measured at 20s of overrun on a 5s budget against an unresponsive ssh
 // remote.
-const waitDelay = 5 * time.Second
+var waitDelay = 5 * time.Second
 
 // boundedGit builds a git command bound to ctx. It is the single place the
 // bound is applied, so no git invocation in this package can be added later
@@ -637,6 +637,14 @@ func boundedGit(ctx context.Context, dir string, args ...string) *exec.Cmd {
 // about whether the command worked: ProcessState does. A successful command is
 // reported as success (ok), and an unsuccessful one gets an error naming the
 // command rather than the bare Go sentinel.
+//
+// As os/exec stands today the unsuccessful cases below cannot happen:
+// Cmd.Wait computes its error from Process.Wait first and only substitutes the
+// WaitDelay result when that error is nil, so ErrWaitDelay implies both a
+// non-nil ProcessState and Success(). They are kept because that ordering is an
+// implementation detail rather than part of Go's compatibility promise, and
+// because without them an ErrWaitDelay from a failed command falls through to
+// the bare sentinel - the exact failure this function exists to prevent.
 func waitDelayOutcome(cmd *exec.Cmd, args []string) (ok bool, err error) {
 	if cmd.ProcessState == nil {
 		return false, fmt.Errorf("git %s: %w", strings.Join(args, " "), exec.ErrWaitDelay)

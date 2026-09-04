@@ -278,10 +278,11 @@ func WithStateLock(poolDir string, fn func() error) error {
 func waitForStateLock(f *os.File, lockPath string) error {
 	started := time.Now()
 	// The budget belongs to the whole command, not to this wait: an earlier
-	// phase can spend all of it before the lock is ever contended. Recording
-	// that here keeps the message from blaming the holder for time it did not
-	// take.
-	spentBeforeWaiting := deadline.Exceeded()
+	// phase can spend most or all of it before the lock is ever contended.
+	// Recording what was left on entry lets the message report the wait and the
+	// budget as the separate facts they are, instead of blaming the holder for
+	// time it did not take.
+	budgetOnEntry := deadline.Remaining()
 	noticed := false
 	for {
 		locked, err := tryLockFile(f)
@@ -293,12 +294,12 @@ func waitForStateLock(f *os.File, lockPath string) error {
 		}
 		if deadline.Exceeded() {
 			waited := time.Since(started).Round(time.Millisecond)
-			if spentBeforeWaiting {
-				return fmt.Errorf("timed out waiting for the pool lock %s%s after %s: the command budget was already spent before this wait began. Raise --timeout",
-					lockPath, describeLockHolder(lockPath), waited)
+			if budgetOnEntry <= 0 {
+				return fmt.Errorf("timed out after %s waiting for the pool lock %s%s: the command budget was already spent before this wait began. Raise --timeout",
+					waited, lockPath, describeLockHolder(lockPath))
 			}
-			return fmt.Errorf("timed out after %s waiting for the pool lock %s%s; another treehouse command is holding it. Wait for it to finish, or raise --timeout",
-				waited, lockPath, describeLockHolder(lockPath))
+			return fmt.Errorf("timed out after %s waiting for the pool lock %s%s: %s of the command budget was left when this wait began. Raise --timeout",
+				waited, lockPath, describeLockHolder(lockPath), budgetOnEntry.Round(time.Millisecond))
 		}
 		if !noticed && time.Since(started) >= lockNoticeAfter {
 			noticed = true

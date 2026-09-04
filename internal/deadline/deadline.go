@@ -83,6 +83,20 @@ func Exceeded() bool {
 	return ok && !time.Now().Before(at)
 }
 
+// Remaining reports how much of the budget is left. An unbounded process, and
+// a bounded one already past its deadline, both report zero, so a caller that
+// only needs "how much was there" does not have to special-case either.
+func Remaining() time.Duration {
+	at, ok := At()
+	if !ok {
+		return 0
+	}
+	if left := time.Until(at); left > 0 {
+		return left
+	}
+	return 0
+}
+
 // Context returns a context bounded by the process deadline. The caller must
 // call the returned cancel function. With no deadline set the context is
 // context.Background with a no-op cancel, so callers need no special case.

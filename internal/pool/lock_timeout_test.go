@@ -88,6 +88,38 @@ func TestWithStateLock_FailsByDeadlineWhenHeldElsewhere(t *testing.T) {
 	}
 }
 
+// Most of a command's budget is routinely spent before the lock is ever
+// reached: prune's per-worktree default-ref probe is a skip on failure, not a
+// fatal error, so a silent origin can consume nearly all of it and leave
+// milliseconds for the lock. The message must report the wait and the budget as
+// separate facts and never assert that the holder caused the delay - "timed out
+// after 3ms; another treehouse command is holding it" sends the user after the
+// wrong process.
+func TestWithStateLock_TimeoutDoesNotBlameTheHolderForBudgetSpentEarlier(t *testing.T) {
+	poolDir := t.TempDir()
+	holdStateLock(t, poolDir)
+
+	deadline.Set(50 * time.Millisecond)
+	t.Cleanup(func() { deadline.Set(0) })
+
+	err := WithStateLock(poolDir, func() error { return nil })
+	if err == nil {
+		t.Fatal("expected a deadline error while the lock was held elsewhere")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("error should name the timeout, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), lockFilePath(poolDir)) {
+		t.Fatalf("error should name the lock it waited on, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "command budget") {
+		t.Fatalf("error should report the budget it had, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "another treehouse command is holding it") {
+		t.Fatalf("error must not blame the holder for the delay, got: %v", err)
+	}
+}
+
 // A bounded wait must still be a wait: contention is normal, and a caller that
 // times out on a holder about to finish would be a worse bug than the wedge.
 func TestWithStateLock_WaitsForAHolderThatFinishesInTime(t *testing.T) {

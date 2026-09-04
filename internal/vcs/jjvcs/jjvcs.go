@@ -559,7 +559,7 @@ func revsetNonEmpty(dir, revset string) bool {
 // after the deadline fired. Without this the deadline is not authoritative -
 // measured at 20s of overrun on a 5s budget against an unresponsive ssh
 // remote.
-const waitDelay = 5 * time.Second
+var waitDelay = 5 * time.Second
 
 // runJJ runs one jj command bounded by the process deadline, for the same
 // reason runGitRaw is: jj shells out to git for network transport, so a jj
@@ -601,6 +601,15 @@ func runJJ(dir string, args ...string) (string, error) {
 		// whether the command worked: ProcessState does. A command that
 		// succeeded must not be reported as a failure, and one that did not
 		// gets an error naming it rather than the bare Go sentinel.
+		//
+		// As os/exec stands today the unsuccessful cases cannot happen:
+		// Cmd.Wait computes its error from Process.Wait first and only
+		// substitutes the WaitDelay result when that error is nil, so
+		// ErrWaitDelay implies both a non-nil ProcessState and Success(). They
+		// are kept because that ordering is an implementation detail rather
+		// than part of Go's compatibility promise, and because without them an
+		// ErrWaitDelay from a failed command falls through to the bare
+		// sentinel.
 		if errors.Is(err, exec.ErrWaitDelay) {
 			if cmd.ProcessState == nil {
 				return "", fmt.Errorf("jj %s: %w", strings.Join(args, " "), err)
